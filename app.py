@@ -1,4 +1,4 @@
- -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # app.py — GHGSat 5x5 km Footprint Planner (Streamlit + Folium)
 #
 # Como usar (resumo):
