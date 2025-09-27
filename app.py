@@ -25,7 +25,7 @@ from pyproj import CRS, Transformer
 
 
         # Tenta extrair todas as feições desenhadas de forma tolerante
-        def _extract_features(all_drawings_obj):
+def _extract_features(all_drawings_obj):
             feats = []
             if not all_drawings_obj:
                 return feats
