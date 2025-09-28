@@ -239,3 +239,5 @@ with col_right:
         with st.expander("Ver lista de passagens (UTC)"):
             rows = sorted([f['properties'] for f in st.session_state['foot_fc']['features']], key=lambda d: d['time_utc'])
             st.dataframe(rows, use_container_width=True)
+
+        
