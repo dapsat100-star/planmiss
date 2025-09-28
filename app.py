@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# GHGSat C10 — Footprints semanais (v9e, 2 colunas apenas, TLE offline)
+# GHGSat C10 — Footprints semanais (v9e-fix, 2 colunas, TLE offline)
 
 import os, json, math
 from datetime import datetime, timezone, timedelta
@@ -141,51 +141,81 @@ with col_left:
          edit_options={'edit': True, 'remove': True}).add_to(m1)
     left_map = st_folium(m1, height=560, returned_objects=['last_drawn_feature','all_drawings'])
 
+    # ---------- FIX robusto para all_drawings ----------
     if st.button("Confirmar AOI", type="primary"):
         feat = None
+
+        # 1) Preferir o último desenho se existir
         if left_map and left_map.get('last_drawn_feature'):
             feat = left_map['last_drawn_feature']
-        elif left_map and left_map.get('all_drawings'):
+
+        # 2) Caso contrário, consolidar todos os desenhos (se houver)
+        if feat is None:
+            drawings = (left_map or {}).get('all_drawings')
             polys = []
-            for f in left_map['all_drawings'].get('features', []):
-                g = f.get('geometry'); 
-                if not g: continue
-                t = g.get('type')
-                if t in ('Polygon','MultiPolygon'):
-                    polys.append(shape(g))
-                elif t == 'GeometryCollection':
-                    for gg in g.get('geometries', []):
-                        if gg.get('type') in ('Polygon','MultiPolygon'):
-                            polys.append(shape(gg))
-            if polys:
-                merged = unary_union(polys).buffer(0)
-                feat = {'type':'Feature','geometry':mapping(merged),'properties':{}}
+            if drawings:
+                if isinstance(drawings, dict) and drawings.get('type') == 'FeatureCollection':
+                    features = drawings.get('features', [])
+                elif isinstance(drawings, dict) and drawings.get('features'):
+                    features = drawings.get('features', [])
+                elif isinstance(drawings, list):
+                    features = drawings
+                else:
+                    features = []
+
+                for f in features:
+                    g = f.get('geometry') if isinstance(f, dict) else None
+                    if not g: 
+                        continue
+                    t = g.get('type')
+                    if t in ('Polygon', 'MultiPolygon'):
+                        polys.append(shape(g))
+                    elif t == 'GeometryCollection':
+                        for gg in g.get('geometries', []):
+                            if gg.get('type') in ('Polygon','MultiPolygon'):
+                                polys.append(shape(gg))
+
+                if polys:
+                    merged = unary_union(polys).buffer(0)
+                    feat = {'type':'Feature','geometry':mapping(merged),'properties':{}}
+
         if not feat:
-            st.warning("Desenhe um polígono antes de confirmar.")
+            st.warning("Desenhe um polígono e clique em Confirmar AOI.")
         else:
             st.session_state['aoi'] = feat['geometry']
-            # --- calcular passagens ---
+
+            # --- calcular passagens e footprints ---
             try:
                 blocks = load_tle_blocks(TLE_PATH)
                 tle_block = pick_c10(blocks)
             except Exception as e:
-                st.error(f"Erro TLE: {e}"); st.stop()
+                st.error(f"Erro TLE: {e}")
+                st.stop()
+
             now = datetime.utcnow().replace(tzinfo=timezone.utc)
             end = now + timedelta(days=7)
             cent = shape(st.session_state['aoi']).centroid
-            passes = weekly_passes(cent.y, cent.x, tle_block, now, end, radius_km=300.0, step_seconds=60)
 
-            # footprints
+            passes = weekly_passes(cent.y, cent.x, tle_block, now, end,
+                                   radius_km=300.0, step_seconds=60)
+
             crs_utm = utm_crs_from_lonlat(cent.x, cent.y)
             aoi_m = to_proj(st.session_state['aoi'], crs_utm); c = aoi_m.centroid
+
             features = []
             for p in passes:
                 rot = _bearing_to_ccw_deg(p['bearing'])
                 foot_m = make_square_5km((c.x, c.y), rot)
                 foot = to_wgs84(foot_m, crs_utm)
-                features.append({'type':'Feature','geometry':mapping(foot),
-                                 'properties':{'time_utc':p['time_utc'], 'kind':p['kind'],
-                                               'bearing':round(p['bearing'],2), 'dist_km':round(p['dist_km'],1)}})
+                features.append({
+                    'type':'Feature','geometry':mapping(foot),
+                    'properties':{
+                        'time_utc': p['time_utc'],
+                        'kind': p['kind'],
+                        'bearing': round(p['bearing'],2),
+                        'dist_km': round(p['dist_km'],1)
+                    }
+                })
             st.session_state['foot_fc'] = {'type':'FeatureCollection','features':features}
             st.success(f"Passagens encontradas: {len(features)}")
 
@@ -194,20 +224,23 @@ with col_right:
     m2 = folium.Map(location=[-15.78, -47.93], zoom_start=4, tiles='OpenStreetMap')
 
     if st.session_state['aoi']:
-        folium.GeoJson({'type':'FeatureCollection','features':[{'type':'Feature','geometry':st.session_state['aoi']}]},
-                       style_function=lambda x: {'fillColor':'#ffffff','color':'#000','weight':2,'fillOpacity':0.25}).add_to(m2)
+        folium.GeoJson(
+            {'type':'FeatureCollection','features':[{'type':'Feature','geometry':st.session_state['aoi']}]},
+            style_function=lambda x: {'fillColor':'#ffffff','color':'#000','weight':2,'fillOpacity':0.25}
+        ).add_to(m2)
 
     if st.session_state['foot_fc']:
-        # sempre mostra ASC e DESC (sem controles)
         fc = st.session_state['foot_fc']
-        folium.GeoJson(fc,
-                       style_function=lambda x: {'fillColor':'#88c','color':'#224',
-                                                 'weight':2,'opacity':0.9,'fillOpacity':0.35},
-                       tooltip=folium.GeoJsonTooltip(fields=['time_utc','kind','bearing','dist_km'],
-                                                     aliases=['UTC','Tipo','Azimute (°)','Dist. (km)'])
-                      ).add_to(m2)
+        folium.GeoJson(
+            fc,
+            style_function=lambda x: {'fillColor':'#88c','color':'#224','weight':2,'opacity':0.9,'fillOpacity':0.35},
+            tooltip=folium.GeoJsonTooltip(fields=['time_utc','kind','bearing','dist_km'],
+                                          aliases=['UTC','Tipo','Azimute (°)','Dist. (km)'])
+        ).add_to(m2)
+
         st.download_button("Baixar GeoJSON (semana)", data=json.dumps(fc),
                            file_name="ghgsat_c10_week_footprints.geojson", mime="application/geo+json")
+
         rows = sorted([f['properties'] for f in fc['features']], key=lambda d: d['time_utc'])
         st.dataframe(rows, use_container_width=True)
 
