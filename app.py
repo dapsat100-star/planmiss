@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# GHGSat C10 — Footprints semanais (v9e-fix, 2 colunas, TLE offline)
+# GHGSat C10 — Footprints semanais (v9e-fix-ui, 2 colunas, TLE offline, UI grande)
 
 import os, json, math
 from datetime import datetime, timezone, timedelta
@@ -14,10 +14,28 @@ from pyproj import CRS, Transformer
 from skyfield.api import EarthSatellite, load, wgs84
 import numpy as np
 
+# ---------- LAYOUT ----------
 st.set_page_config(page_title='GHGSat C10 — Semana (TLE offline)', layout='wide')
+st.markdown("""
+<style>
+/* menos margem nas laterais/superior */
+.block-container {padding-top: 0.6rem; padding-bottom: 0.4rem; max-width: 95vw;}
+/* caixas para sobrepor título nos mapas */
+.mapbox { position: relative; }
+.mapbadge {
+  position: absolute; z-index: 20; top: 12px; left: 14px;
+  padding: .35rem .7rem; border-radius: .6rem;
+  background: rgba(15,15,20,.65); color: #fff; font-weight: 700; font-size: 0.95rem;
+  box-shadow: 0 6px 18px rgba(0,0,0,.18); backdrop-filter: blur(4px);
+}
+.smallbadge { top: 12px; right: 14px; left: auto; }
+.leaflet-control { filter: drop-shadow(0 2px 6px rgba(0,0,0,.25)); }
+</style>
+""", unsafe_allow_html=True)
+
 TLE_PATH = os.path.join(os.path.dirname(__file__), 'tle', 'ghgsat.tle')
 
-# --------- helpers geo ----------
+# --------- helpers geo (iguais) ---------
 def utm_crs_from_lonlat(lon: float, lat: float):
     zone = int((lon + 180) // 6) + 1
     south = lat < 0
@@ -59,7 +77,7 @@ def make_square_5km(center_m, azimuth_deg: float):
     sq = rotate(sq, azimuth_deg, origin=(0,0), use_radians=False)
     return translate(sq, xoff=center_m[0], yoff=center_m[1])
 
-# --------- TLE (offline) ----------
+# --------- TLE (offline) ---------
 def load_tle_blocks(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Arquivo TLE não encontrado: {path}")
@@ -83,7 +101,7 @@ def pick_c10(blocks):
     if len(blocks) == 1: return blocks[0]
     raise KeyError("Não achei TLE do GHGSAT-C10 em ./tle/ghgsat.tle")
 
-# --------- passes (1 semana) ----------
+# --------- passes (1 semana) ---------
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0088
     from math import radians, sin, cos, sqrt, atan2
@@ -124,32 +142,29 @@ def weekly_passes(cent_lat, cent_lon, tle_block, start_utc, end_utc, radius_km=3
         passes.append({'time_utc': t_mid.isoformat(), 'bearing': bearing, 'kind': kind, 'dist_km': float(dists[k])})
     return passes
 
-# --------- UI (2 colunas) ----------
+# --------- UI (2 colunas, mapas grandes com badge) ----------
 st.title("🛰️ GHGSat C10 — Footprints semanais (ASC/DESC) — TLE offline")
-st.caption("Desenhe a AOI, confirme, e veja os footprints 5×5 km de todas as passagens na próxima semana (UTC).")
 
-col_left, col_right = st.columns([1.2, 1.2])
+col_left, col_right = st.columns([1, 1], gap="medium")
+MAP_HEIGHT = 820  # px (aumente/diminua à vontade)
+
 if 'aoi' not in st.session_state: st.session_state['aoi'] = None
 if 'foot_fc' not in st.session_state: st.session_state['foot_fc'] = None
 
 with col_left:
-    st.subheader("1) Desenhar AOI")
+    st.markdown('<div class="mapbox"><div class="mapbadge">1) Desenhar AOI</div>', unsafe_allow_html=True)
     m1 = folium.Map(location=[-15.78, -47.93], zoom_start=4, tiles='OpenStreetMap')
     from folium.plugins import Draw
     Draw(export=False, filename='aoi.geojson',
          draw_options={'polygon': True, 'rectangle': True, 'circle': False, 'polyline': False, 'marker': False, 'circlemarker': False},
          edit_options={'edit': True, 'remove': True}).add_to(m1)
-    left_map = st_folium(m1, height=560, returned_objects=['last_drawn_feature','all_drawings'])
+    left_map = st_folium(m1, height=MAP_HEIGHT, returned_objects=['last_drawn_feature','all_drawings'])
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---------- FIX robusto para all_drawings ----------
-    if st.button("Confirmar AOI", type="primary"):
+    if st.button("✅ Confirmar AOI", use_container_width=True):
         feat = None
-
-        # 1) Preferir o último desenho se existir
         if left_map and left_map.get('last_drawn_feature'):
             feat = left_map['last_drawn_feature']
-
-        # 2) Caso contrário, consolidar todos os desenhos (se houver)
         if feat is None:
             drawings = (left_map or {}).get('all_drawings')
             polys = []
@@ -162,86 +177,65 @@ with col_left:
                     features = drawings
                 else:
                     features = []
-
                 for f in features:
                     g = f.get('geometry') if isinstance(f, dict) else None
-                    if not g: 
-                        continue
+                    if not g: continue
                     t = g.get('type')
-                    if t in ('Polygon', 'MultiPolygon'):
+                    if t in ('Polygon','MultiPolygon'):
                         polys.append(shape(g))
                     elif t == 'GeometryCollection':
                         for gg in g.get('geometries', []):
                             if gg.get('type') in ('Polygon','MultiPolygon'):
                                 polys.append(shape(gg))
-
-                if polys:
-                    merged = unary_union(polys).buffer(0)
-                    feat = {'type':'Feature','geometry':mapping(merged),'properties':{}}
+            if polys:
+                merged = unary_union(polys).buffer(0)
+                feat = {'type':'Feature','geometry':mapping(merged),'properties':{}}
 
         if not feat:
-            st.warning("Desenhe um polígono e clique em Confirmar AOI.")
+            st.warning("Desenhe um polígono e confirme.")
         else:
             st.session_state['aoi'] = feat['geometry']
-
-            # --- calcular passagens e footprints ---
-            try:
-                blocks = load_tle_blocks(TLE_PATH)
-                tle_block = pick_c10(blocks)
-            except Exception as e:
-                st.error(f"Erro TLE: {e}")
-                st.stop()
-
+            # calcular passagens + footprints
+            blocks = load_tle_blocks(TLE_PATH)
+            tle_block = pick_c10(blocks)
             now = datetime.utcnow().replace(tzinfo=timezone.utc)
             end = now + timedelta(days=7)
             cent = shape(st.session_state['aoi']).centroid
-
-            passes = weekly_passes(cent.y, cent.x, tle_block, now, end,
-                                   radius_km=300.0, step_seconds=60)
+            passes = weekly_passes(cent.y, cent.x, tle_block, now, end, radius_km=300.0, step_seconds=60)
 
             crs_utm = utm_crs_from_lonlat(cent.x, cent.y)
             aoi_m = to_proj(st.session_state['aoi'], crs_utm); c = aoi_m.centroid
-
-            features = []
+            feats = []
             for p in passes:
                 rot = _bearing_to_ccw_deg(p['bearing'])
                 foot_m = make_square_5km((c.x, c.y), rot)
                 foot = to_wgs84(foot_m, crs_utm)
-                features.append({
-                    'type':'Feature','geometry':mapping(foot),
-                    'properties':{
-                        'time_utc': p['time_utc'],
-                        'kind': p['kind'],
-                        'bearing': round(p['bearing'],2),
-                        'dist_km': round(p['dist_km'],1)
-                    }
-                })
-            st.session_state['foot_fc'] = {'type':'FeatureCollection','features':features}
-            st.success(f"Passagens encontradas: {len(features)}")
+                feats.append({'type':'Feature','geometry':mapping(foot),
+                              'properties':{'time_utc':p['time_utc'],'kind':p['kind'],
+                                            'bearing':round(p['bearing'],2),'dist_km':round(p['dist_km'],1)}})
+            st.session_state['foot_fc'] = {'type':'FeatureCollection','features':feats}
+            st.success(f"Passagens encontradas: {len(feats)}")
 
 with col_right:
-    st.subheader("2) Footprints semanais")
+    st.markdown('<div class="mapbox"><div class="mapbadge">2) Footprints semanais</div>', unsafe_allow_html=True)
     m2 = folium.Map(location=[-15.78, -47.93], zoom_start=4, tiles='OpenStreetMap')
 
     if st.session_state['aoi']:
-        folium.GeoJson(
-            {'type':'FeatureCollection','features':[{'type':'Feature','geometry':st.session_state['aoi']}]},
-            style_function=lambda x: {'fillColor':'#ffffff','color':'#000','weight':2,'fillOpacity':0.25}
-        ).add_to(m2)
+        folium.GeoJson({'type':'FeatureCollection','features':[{'type':'Feature','geometry':st.session_state['aoi']}]},
+                       style_function=lambda x: {'fillColor':'#ffffff','color':'#000','weight':2,'fillOpacity':0.25}).add_to(m2)
 
     if st.session_state['foot_fc']:
         fc = st.session_state['foot_fc']
-        folium.GeoJson(
-            fc,
-            style_function=lambda x: {'fillColor':'#88c','color':'#224','weight':2,'opacity':0.9,'fillOpacity':0.35},
-            tooltip=folium.GeoJsonTooltip(fields=['time_utc','kind','bearing','dist_km'],
-                                          aliases=['UTC','Tipo','Azimute (°)','Dist. (km)'])
-        ).add_to(m2)
+        folium.GeoJson(fc,
+                       style_function=lambda x: {'fillColor':'#88c','color':'#224','weight':2,'opacity':0.9,'fillOpacity':0.35},
+                       tooltip=folium.GeoJsonTooltip(fields=['time_utc','kind','bearing','dist_km'],
+                                                     aliases=['UTC','Tipo','Azimute (°)','Dist. (km)'])).add_to(m2)
+    st_folium(m2, height=MAP_HEIGHT)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-        st.download_button("Baixar GeoJSON (semana)", data=json.dumps(fc),
+    if st.session_state.get('foot_fc'):
+        st.download_button("⬇️ Baixar GeoJSON (semana)", data=json.dumps(st.session_state['foot_fc']),
                            file_name="ghgsat_c10_week_footprints.geojson", mime="application/geo+json")
-
-        rows = sorted([f['properties'] for f in fc['features']], key=lambda d: d['time_utc'])
-        st.dataframe(rows, use_container_width=True)
-
-    st_folium(m2, height=560)
+        with st.expander("Ver lista de passagens (UTC)"):
+            rows = sorted([f['properties'] for f in st.session_state['foot_fc']['features']], key=lambda d: d['time_utc'])
+            st.dataframe(rows, use_container_width=True)
