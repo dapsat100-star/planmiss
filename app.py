@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# GHGSat C10 — Footprints semanais (v9e-fix-ui, 2 colunas, TLE offline, UI grande)
+# GHGSat C10 — Footprints semanais (v9e-fix-ui+colors, 2 colunas, TLE offline, UI grande)
 
 import os, json, math
 from datetime import datetime, timezone, timedelta
@@ -18,9 +18,7 @@ import numpy as np
 st.set_page_config(page_title='GHGSat C10 — Semana (TLE offline)', layout='wide')
 st.markdown("""
 <style>
-/* menos margem nas laterais/superior */
 .block-container {padding-top: 0.6rem; padding-bottom: 0.4rem; max-width: 95vw;}
-/* caixas para sobrepor título nos mapas */
 .mapbox { position: relative; }
 .mapbadge {
   position: absolute; z-index: 20; top: 12px; left: 14px;
@@ -28,14 +26,22 @@ st.markdown("""
   background: rgba(15,15,20,.65); color: #fff; font-weight: 700; font-size: 0.95rem;
   box-shadow: 0 6px 18px rgba(0,0,0,.18); backdrop-filter: blur(4px);
 }
-.smallbadge { top: 12px; right: 14px; left: auto; }
+.legendbadge {
+  position: absolute; z-index: 20; top: 12px; right: 14px;
+  padding: .35rem .6rem; border-radius: .6rem;
+  background: rgba(15,15,20,.55); color: #fff; font-size: 0.85rem;
+  box-shadow: 0 6px 18px rgba(0,0,0,.18); backdrop-filter: blur(4px);
+}
+.legendbadge .dot {display:inline-block; width:10px; height:10px; border-radius:50%; margin:0 6px 0 10px;}
+.dot.asc {background:#2ecc71;}
+.dot.desc {background:#e74c3c;}
 .leaflet-control { filter: drop-shadow(0 2px 6px rgba(0,0,0,.25)); }
 </style>
 """, unsafe_allow_html=True)
 
 TLE_PATH = os.path.join(os.path.dirname(__file__), 'tle', 'ghgsat.tle')
 
-# --------- helpers geo (iguais) ---------
+# --------- helpers geo ---------
 def utm_crs_from_lonlat(lon: float, lat: float):
     zone = int((lon + 180) // 6) + 1
     south = lat < 0
@@ -77,7 +83,7 @@ def make_square_5km(center_m, azimuth_deg: float):
     sq = rotate(sq, azimuth_deg, origin=(0,0), use_radians=False)
     return translate(sq, xoff=center_m[0], yoff=center_m[1])
 
-# --------- TLE (offline) ---------
+# --------- TLE (offline) ----------
 def load_tle_blocks(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Arquivo TLE não encontrado: {path}")
@@ -101,7 +107,7 @@ def pick_c10(blocks):
     if len(blocks) == 1: return blocks[0]
     raise KeyError("Não achei TLE do GHGSAT-C10 em ./tle/ghgsat.tle")
 
-# --------- passes (1 semana) ---------
+# --------- passes (1 semana) ----------
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0088
     from math import radians, sin, cos, sqrt, atan2
@@ -142,18 +148,18 @@ def weekly_passes(cent_lat, cent_lon, tle_block, start_utc, end_utc, radius_km=3
         passes.append({'time_utc': t_mid.isoformat(), 'bearing': bearing, 'kind': kind, 'dist_km': float(dists[k])})
     return passes
 
-# --------- UI (2 colunas, mapas grandes com badge) ----------
+# --------- UI (2 colunas, mapas grandes com badge/legenda) ----------
 st.title("🛰️ GHGSat C10 — Footprints semanais (ASC/DESC) — TLE offline")
 
 col_left, col_right = st.columns([1, 1], gap="medium")
-MAP_HEIGHT = 820  # px (aumente/diminua à vontade)
+MAP_HEIGHT = 820  # px
 
 if 'aoi' not in st.session_state: st.session_state['aoi'] = None
 if 'foot_fc' not in st.session_state: st.session_state['foot_fc'] = None
 
 with col_left:
     st.markdown('<div class="mapbox"><div class="mapbadge">1) Desenhar AOI</div>', unsafe_allow_html=True)
-    m1 = folium.Map(location=[-15.78, -47.93], zoom_start=4, tiles='OpenStreetMap')
+    m1 = folium.Map(location=[-15.78, -47.93], zoom_start=4, tiles='CartoDB positron')
     from folium.plugins import Draw
     Draw(export=False, filename='aoi.geojson',
          draw_options={'polygon': True, 'rectangle': True, 'circle': False, 'polyline': False, 'marker': False, 'circlemarker': False},
@@ -217,19 +223,32 @@ with col_left:
             st.success(f"Passagens encontradas: {len(feats)}")
 
 with col_right:
-    st.markdown('<div class="mapbox"><div class="mapbadge">2) Footprints semanais</div>', unsafe_allow_html=True)
-    m2 = folium.Map(location=[-15.78, -47.93], zoom_start=4, tiles='OpenStreetMap')
+    st.markdown('<div class="mapbox"><div class="mapbadge">2) Footprints semanais</div>'
+                '<div class="legendbadge"><span class="dot asc"></span>ASC  '
+                '<span class="dot desc"></span>DESC</div>', unsafe_allow_html=True)
 
+    m2 = folium.Map(location=[-15.78, -47.93], zoom_start=4, tiles='CartoDB positron')
+
+    # AOI
     if st.session_state['aoi']:
         folium.GeoJson({'type':'FeatureCollection','features':[{'type':'Feature','geometry':st.session_state['aoi']}]},
                        style_function=lambda x: {'fillColor':'#ffffff','color':'#000','weight':2,'fillOpacity':0.25}).add_to(m2)
 
+    # Footprints com cores por tipo
     if st.session_state['foot_fc']:
-        fc = st.session_state['foot_fc']
-        folium.GeoJson(fc,
-                       style_function=lambda x: {'fillColor':'#88c','color':'#224','weight':2,'opacity':0.9,'fillOpacity':0.35},
+        def style_fn(feat):
+            kind = (feat['properties'].get('kind') or '').upper()
+            if kind == 'ASC':
+                fill, stroke = '#2ecc71', '#1e874b'   # verde
+            else:
+                fill, stroke = '#e74c3c', '#b03a2e'   # vermelho
+            return {'fillColor': fill, 'color': stroke, 'weight': 2, 'opacity': 0.9, 'fillOpacity': 0.35}
+
+        folium.GeoJson(st.session_state['foot_fc'],
+                       style_function=style_fn,
                        tooltip=folium.GeoJsonTooltip(fields=['time_utc','kind','bearing','dist_km'],
                                                      aliases=['UTC','Tipo','Azimute (°)','Dist. (km)'])).add_to(m2)
+
     st_folium(m2, height=MAP_HEIGHT)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -239,5 +258,3 @@ with col_right:
         with st.expander("Ver lista de passagens (UTC)"):
             rows = sorted([f['properties'] for f in st.session_state['foot_fc']['features']], key=lambda d: d['time_utc'])
             st.dataframe(rows, use_container_width=True)
-
-        
